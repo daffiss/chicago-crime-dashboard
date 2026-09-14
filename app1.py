@@ -3,9 +3,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
 import duckdb
+
 
 # ============================================================
 # CONFIGURATION
@@ -17,36 +17,89 @@ st.set_page_config(
     layout="wide"
 )
 
-# Change this to your dataset path
-from pathlib import Path
-
 DATA_PATH = Path(__file__).parent / "chicago_crimes.csv"
 
 
 # ============================================================
-# LOAD DATA
+# DUCKDB CONNECTION
+# ============================================================
+
+@st.cache_resource
+def get_connection():
+    con = duckdb.connect()
+
+    csv_path = str(DATA_PATH).replace("\\", "/").replace("'", "''")
+
+    con.execute(
+        f"""
+        CREATE OR REPLACE VIEW crimes AS
+        SELECT *
+        FROM read_csv_auto('{csv_path}', header=true)
+        """
+    )
+
+    return con
+
+
+con = get_connection()
+
+# ============================================================
+# BASIC INFORMATION FOR FILTERS
 # ============================================================
 
 @st.cache_data
-def load_data(path):
-    df = pd.read_csv(path)
-
-    st.write(f"DataFrame memory usage: {df.memory_usage(deep=True).sum() / 1024**2:.2f} MB")
-
-    # Convert date
-    df["Date"] = pd.to_datetime(
-    df["Date"],
-    format="%m/%d/%Y %I:%M:%S %p",
-    errors="coerce"
-    )
-
-    # Make year numeric
-    df["Year"] = pd.to_numeric(df["Year"], errors="coerce")
-
-    return df
+def get_years():
+    return con.execute(
+        """
+        SELECT DISTINCT CAST(Year AS INTEGER) AS Year
+        FROM crimes
+        WHERE Year IS NOT NULL
+        ORDER BY Year
+        """
+    ).df()["Year"].tolist()
 
 
-df = load_data(DATA_PATH)
+@st.cache_data
+def get_crime_types():
+    return con.execute(
+        """
+        SELECT DISTINCT "Primary Type"
+        FROM crimes
+        WHERE "Primary Type" IS NOT NULL
+        ORDER BY "Primary Type"
+        """
+    ).df()["Primary Type"].tolist()
+
+
+@st.cache_data
+def get_districts():
+    return con.execute(
+        """
+        SELECT DISTINCT District
+        FROM crimes
+        WHERE District IS NOT NULL
+        ORDER BY District
+        """
+    ).df()["District"].tolist()
+
+
+@st.cache_data
+def get_locations():
+    return con.execute(
+        """
+        SELECT DISTINCT "Location Description"
+        FROM crimes
+        WHERE "Location Description" IS NOT NULL
+        ORDER BY "Location Description"
+        """
+    ).df()["Location Description"].tolist()
+
+
+years = get_years()
+crime_types = get_crime_types()
+districts = get_districts()
+locations = get_locations()
+
 
 # ============================================================
 # TITLE
@@ -66,14 +119,12 @@ st.markdown(
 
 st.divider()
 
+
 # ============================================================
 # SIDEBAR FILTERS
 # ============================================================
 
 st.sidebar.header("Filters")
-
-# Years
-years = sorted(df["Year"].dropna().unique())
 
 selected_years = st.sidebar.slider(
     "Year range",
@@ -82,17 +133,11 @@ selected_years = st.sidebar.slider(
     value=(int(min(years)), int(max(years)))
 )
 
-# Crime types
-crime_types = sorted(df["Primary Type"].dropna().unique())
-
 selected_crimes = st.sidebar.multiselect(
     "Crime type",
     options=crime_types,
     default=[]
 )
-
-# District
-districts = sorted(df["District"].dropna().unique())
 
 selected_districts = st.sidebar.multiselect(
     "District",
@@ -100,56 +145,75 @@ selected_districts = st.sidebar.multiselect(
     default=[]
 )
 
-# Location
-locations = sorted(df["Location Description"].dropna().unique())
-
 selected_locations = st.sidebar.multiselect(
     "Location type",
     options=locations,
     default=[]
 )
 
-# Arrest
 arrest_filter = st.sidebar.selectbox(
     "Arrest",
     ["All", "Yes", "No"]
 )
 
+
 # ============================================================
-# FILTER DATA USING DUCKDB
+# BUILD WHERE CLAUSE
 # ============================================================
 
-query = """
-SELECT *
-FROM df
-WHERE Year BETWEEN ? AND ?
-"""
+def build_where_clause():
+    conditions = [
+        'CAST("Year" AS INTEGER) BETWEEN ? AND ?'
+    ]
 
-params = [selected_years[0], selected_years[1]]
+    params = [
+        selected_years[0],
+        selected_years[1]
+    ]
 
-if selected_crimes:
-    query += " AND \"Primary Type\" IN ({})".format(
-        ",".join(["?"] * len(selected_crimes))
-    )
-    params.extend(selected_crimes)
+    if selected_crimes:
+        placeholders = ",".join(["?"] * len(selected_crimes))
 
-if selected_districts:
-    query += " AND District IN ({})".format(
-        ",".join(["?"] * len(selected_districts))
-    )
-    params.extend(selected_districts)
+        conditions.append(
+            f'"Primary Type" IN ({placeholders})'
+        )
 
-if selected_locations:
-    query += " AND \"Location Description\" IN ({})".format(
-        ",".join(["?"] * len(selected_locations))
-    )
-    params.extend(selected_locations)
+        params.extend(selected_crimes)
 
-if arrest_filter != "All":
-    query += " AND Arrest = ?"
-    params.append(arrest_filter == "Yes")
+    if selected_districts:
+        placeholders = ",".join(["?"] * len(selected_districts))
 
-filtered_df = duckdb.execute(query, params).df()
+        conditions.append(
+            f'District IN ({placeholders})'
+        )
+
+        params.extend(selected_districts)
+
+    if selected_locations:
+        placeholders = ",".join(["?"] * len(selected_locations))
+
+        conditions.append(
+            f'"Location Description" IN ({placeholders})'
+        )
+
+        params.extend(selected_locations)
+
+    if arrest_filter != "All":
+        conditions.append(
+            'LOWER(CAST(Arrest AS VARCHAR)) = ?'
+        )
+
+        params.append(
+            "true" if arrest_filter == "Yes" else "false"
+        )
+
+    where_clause = " AND ".join(conditions)
+
+    return where_clause, params
+
+
+where_clause, params = build_where_clause()
+
 
 # ============================================================
 # KPI SECTION
@@ -157,15 +221,35 @@ filtered_df = duckdb.execute(query, params).df()
 
 st.subheader("Overview")
 
-total_crimes = len(filtered_df)
 
-total_arrests = (
-    filtered_df["Arrest"]
-    .astype(str)
-    .str.lower()
-    .eq("true")
-    .sum()
-)
+kpi_query = f"""
+SELECT
+    COUNT(*) AS total_crimes,
+
+    SUM(
+        CASE
+            WHEN LOWER(CAST(Arrest AS VARCHAR)) = 'true'
+            THEN 1
+            ELSE 0
+        END
+    ) AS total_arrests,
+
+    COUNT(DISTINCT "Primary Type") AS crime_types
+
+FROM crimes
+
+WHERE {where_clause}
+"""
+
+
+kpi = con.execute(
+    kpi_query,
+    params
+).df().iloc[0]
+
+
+total_crimes = int(kpi["total_crimes"])
+total_arrests = int(kpi["total_arrests"] or 0)
 
 arrest_rate = (
     total_arrests / total_crimes * 100
@@ -173,17 +257,31 @@ arrest_rate = (
     else 0
 )
 
+
+# Most common crime
+
+most_common_crime_query = f"""
+SELECT
+    "Primary Type" AS crime,
+    COUNT(*) AS count
+FROM crimes
+WHERE {where_clause}
+GROUP BY "Primary Type"
+ORDER BY count DESC
+LIMIT 1
+"""
+
+most_common_result = con.execute(
+    most_common_crime_query,
+    params
+).df()
+
 most_common_crime = (
-    filtered_df["Primary Type"].value_counts().idxmax()
-    if not filtered_df.empty
+    most_common_result.iloc[0]["crime"]
+    if not most_common_result.empty
     else "N/A"
 )
 
-most_common_location = (
-    filtered_df["Location Description"].value_counts().idxmax()
-    if not filtered_df.empty
-    else "N/A"
-)
 
 col1, col2, col3, col4 = st.columns(4)
 
@@ -211,30 +309,45 @@ st.caption(
     f"Selected period: {selected_years[0]}–{selected_years[1]}"
 )
 
+
 # ============================================================
-# TRENDS
+# CRIME TRENDS
 # ============================================================
 
 st.divider()
 
 st.subheader("Crime Trends")
 
-if not filtered_df.empty:
 
-    yearly_crimes = (
-        filtered_df
-        .groupby("Year")
-        .size()
-        .reset_index(name="Crimes")
-        .sort_values("Year")
-    )
+trend_query = f"""
+SELECT
+    CAST("Year" AS INTEGER) AS Year,
+    COUNT(*) AS Crimes
+FROM crimes
+WHERE {where_clause}
+GROUP BY Year
+ORDER BY Year
+"""
+
+yearly_crimes = con.execute(
+    trend_query,
+    params
+).df()
+
+
+if not yearly_crimes.empty:
+
+    # Convert years to strings so Plotly treats them as categories
+    yearly_crimes["Year"] = yearly_crimes["Year"].astype(int).astype(str)
 
     fig = px.line(
         yearly_crimes,
         x="Year",
         y="Crimes",
         markers=True,
-        title="Reported crimes over time"
+        category_orders={
+            "Year": sorted(yearly_crimes["Year"].unique())
+        }
     )
 
     fig.update_layout(
@@ -243,13 +356,114 @@ if not filtered_df.empty:
         hovermode="x unified"
     )
 
+    # Force the x-axis to be categorical
+    fig.update_xaxes(
+        type="category"
+    )
+
     st.plotly_chart(
         fig,
         width="stretch"
     )
 
 else:
-    st.warning("No data available for the selected filters.")
+    st.warning(
+        "No data available for the selected filters."
+    )
+
+
+
+# ============================================================
+# CRIME TYPES
+# ============================================================
+
+st.divider()
+
+col1, col2 = st.columns(2)
+
+
+with col1:
+
+    st.subheader("Crime by Type")
+
+    crime_query = f"""
+    SELECT
+        "Primary Type" AS "Crime Type",
+        COUNT(*) AS Count
+    FROM crimes
+    WHERE {where_clause}
+    GROUP BY "Primary Type"
+    ORDER BY Count DESC
+    LIMIT 10
+    """
+
+    crime_counts = con.execute(
+        crime_query,
+        params
+    ).df()
+
+    fig = px.bar(
+        crime_counts,
+        x="Count",
+        y="Crime Type",
+        orientation="h",
+        title="Top 10 crime types"
+    )
+
+    fig.update_layout(
+        yaxis=dict(autorange="reversed"),
+        xaxis_title="Number of crimes",
+        yaxis_title=""
+    )
+
+    st.plotly_chart(
+        fig,
+        width="stretch"
+    )
+
+
+# ============================================================
+# LOCATION TYPES
+# ============================================================
+
+with col2:
+
+    st.subheader("Crime by Location")
+
+    location_query = f"""
+    SELECT
+        "Location Description" AS Location,
+        COUNT(*) AS Count
+    FROM crimes
+    WHERE {where_clause}
+    GROUP BY "Location Description"
+    ORDER BY Count DESC
+    LIMIT 10
+    """
+
+    location_counts = con.execute(
+        location_query,
+        params
+    ).df()
+
+    fig = px.bar(
+        location_counts,
+        x="Count",
+        y="Location",
+        orientation="h",
+        title="Top 10 locations"
+    )
+
+    fig.update_layout(
+        yaxis=dict(autorange="reversed"),
+        xaxis_title="Number of crimes",
+        yaxis_title=""
+    )
+
+    st.plotly_chart(
+        fig,
+        width="stretch"
+    )
 
 # ============================================================
 # CRIME TRENDS TABLE
@@ -257,45 +471,6 @@ else:
 
 st.subheader("Crime Trends Table")
 
-# Make sure Year is numeric
-filtered_df["Year"] = pd.to_numeric(
-    filtered_df["Year"],
-    errors="coerce"
-)
-
-filtered_df = filtered_df.dropna(subset=["Year"]).copy()
-filtered_df["Year"] = filtered_df["Year"].astype(int)
-
-# ------------------------------------------------------------
-# Use only complete years: 2023, 2024, 2025
-# ------------------------------------------------------------
-
-years = sorted(
-    filtered_df["Year"].unique()
-)
-
-# Exclude the current incomplete year
-current_year = max(years)
-
-complete_years = [
-    year for year in years
-    if year < current_year
-]
-
-# Newest year first
-complete_years = sorted(
-    complete_years,
-    reverse=True
-)
-
-# Data for complete years only
-complete_df = filtered_df[
-    filtered_df["Year"].isin(complete_years)
-].copy()
-
-# ------------------------------------------------------------
-# Crime categories
-# ------------------------------------------------------------
 
 crime_categories = [
     "ROBBERY",
@@ -307,72 +482,69 @@ crime_categories = [
     "HOMICIDE"
 ]
 
-# Keep only crime types that exist in the dataset
+
+# ------------------------------------------------------------
+# Get yearly counts directly from DuckDB
+# ------------------------------------------------------------
+
+table_query = f"""
+SELECT
+    CAST("Year" AS INTEGER) AS Year,
+    "Primary Type",
+    COUNT(*) AS Count
+FROM crimes
+WHERE {where_clause}
+GROUP BY Year, "Primary Type"
+ORDER BY Year
+"""
+
+
+table_raw = con.execute(
+    table_query,
+    params
+).df()
+
+
+table_years = sorted(
+    table_raw["Year"].dropna().unique(),
+    reverse=True
+)
+
+
 available_categories = [
     crime
     for crime in crime_categories
-    if crime in complete_df["Primary Type"].unique()
+    if crime in table_raw["Primary Type"].unique()
 ]
 
-# ------------------------------------------------------------
-# Create yearly counts
-# ------------------------------------------------------------
-
-yearly_counts = {}
-
-for crime in available_categories:
-
-    counts = (
-        complete_df[
-            complete_df["Primary Type"] == crime
-        ]
-        .groupby("Year")
-        .size()
-        .reindex(complete_years, fill_value=0)
-    )
-
-    yearly_counts[crime] = counts
-
-# ------------------------------------------------------------
-# Total reported crimes
-# ------------------------------------------------------------
-
-total_counts = (
-    complete_df
-    .groupby("Year")
-    .size()
-    .reindex(complete_years, fill_value=0)
-)
-
-# ------------------------------------------------------------
-# Build table
-# ------------------------------------------------------------
 
 table = pd.DataFrame()
 
-# Year
-table["Year"] = complete_years
+table["Year"] = table_years
 
-# ------------------------------------------------------------
-# Function for Year-over-Year change
-# ------------------------------------------------------------
 
-def calculate_change(counts, year, all_years):
+def calculate_change(
+    counts,
+    year,
+    available_years
+):
 
-    # 2023 cannot be compared because the dataset
-    # starts on January 1, 2023
-    previous_years = [
-        y for y in all_years
-        if y < year
-    ]
-
-    if len(previous_years) == 0:
+    # 2023 has no previous year in the dataset.
+    if year == 2023:
         return np.nan
 
-    previous_year = max(previous_years)
+    # 2026 is incomplete / year-to-date.
+    # Do not compare it with complete 2025.
+    if year == 2026:
+        return np.nan
 
-    current_count = counts.loc[year]
-    previous_count = counts.loc[previous_year]
+    previous_year = year - 1
+
+    if previous_year not in available_years:
+        return np.nan
+
+    current_count = counts.get(year, 0)
+    previous_count = counts.get(previous_year, 0)
 
     if previous_count == 0:
         return np.nan
@@ -385,49 +557,63 @@ def calculate_change(counts, year, all_years):
 
 
 # ------------------------------------------------------------
-# Add crime columns
+# Crime categories
 # ------------------------------------------------------------
 
 for crime in available_categories:
 
-    counts = yearly_counts[crime]
+    crime_counts = (
+        table_raw[
+            table_raw["Primary Type"] == crime
+        ]
+        .set_index("Year")["Count"]
+        .to_dict()
+    )
 
-    # Count
     table[f"{crime} — Count"] = [
-        int(counts.loc[year])
-        for year in complete_years
+        int(crime_counts.get(year, 0))
+        for year in table_years
     ]
 
-    # Change From Previous Year
     table[f"{crime} — Change From Previous Year"] = [
         calculate_change(
-            counts,
+            crime_counts,
             year,
-            complete_years
+            table_years
         )
-        for year in complete_years
+        for year in table_years
     ]
 
+
 # ------------------------------------------------------------
-# Add Total Reported Crimes
+# Total reported crimes
 # ------------------------------------------------------------
 
+total_yearly = (
+    table_raw
+    .groupby("Year")["Count"]
+    .sum()
+    .to_dict()
+)
+
+
 table["Total Reported Crimes — Count"] = [
-    int(total_counts.loc[year])
-    for year in complete_years
+    int(total_yearly.get(year, 0))
+    for year in table_years
 ]
 
 table["Total Reported Crimes — Change From Previous Year"] = [
     calculate_change(
-        total_counts,
+        total_yearly,
         year,
-        complete_years
+        table_years
     )
-    for year in complete_years
+    for year in table_years
 ]
 
+
 # ------------------------------------------------------------
-# Format Count columns
+# Format count columns
 # ------------------------------------------------------------
 
 for column in table.columns:
@@ -440,8 +626,9 @@ for column in table.columns:
             .map(lambda x: f"{x:,}")
         )
 
+
 # ------------------------------------------------------------
-# Format Change columns
+# Format change columns
 # ------------------------------------------------------------
 
 for column in table.columns:
@@ -455,10 +642,9 @@ for column in table.columns:
             else f"{x:+.1f}%"
         )
 
+
 # ------------------------------------------------------------
 # Highlight changes
-# Decrease = green
-# Increase = red
 # ------------------------------------------------------------
 
 def highlight_change(value):
@@ -481,28 +667,25 @@ def highlight_change(value):
                 "font-weight: bold;"
             )
 
-        elif number > 0:
+        if number > 0:
             return (
                 "background-color: #f8d7da;"
                 "color: #b02a37;"
                 "font-weight: bold;"
             )
 
-    except:
+    except Exception:
         pass
 
     return ""
 
-
-# ------------------------------------------------------------
-# Apply styling
-# ------------------------------------------------------------
 
 change_columns = [
     column
     for column in table.columns
     if "Change From Previous Year" in column
 ]
+
 
 styled_table = table.style
 
@@ -513,9 +696,6 @@ for column in change_columns:
         subset=[column]
     )
 
-# ------------------------------------------------------------
-# Display
-# ------------------------------------------------------------
 
 st.dataframe(
     styled_table,
@@ -523,89 +703,14 @@ st.dataframe(
     hide_index=True
 )
 
-# ------------------------------------------------------------
-# Note
-# ------------------------------------------------------------
 
 st.caption(
     "Percentage changes show the year-over-year change in reported "
     "crime counts. 2023 is shown without a percentage change because "
-    "the dataset starts on January 1, 2023 and therefore does not "
-    "contain data for 2022."
+    "the dataset starts on January 1, 2023. 2026 is shown as "
+    "year-to-date data and is therefore not used for year-over-year "
+    "percentage comparisons."
 )
-# ============================================================
-# CRIME TYPES
-# ============================================================
-
-st.divider()
-
-col1, col2 = st.columns(2)
-
-with col1:
-    st.subheader("Crime by Type")
-
-    crime_counts = (
-        filtered_df["Primary Type"]
-        .value_counts()
-        .head(10)
-        .reset_index()
-    )
-
-    crime_counts.columns = ["Crime Type", "Count"]
-
-    fig = px.bar(
-        crime_counts,
-        x="Count",
-        y="Crime Type",
-        orientation="h",
-        title="Top 10 crime types"
-    )
-
-    fig.update_layout(
-        yaxis=dict(autorange="reversed"),
-        xaxis_title="Number of crimes",
-        yaxis_title=""
-    )
-
-    st.plotly_chart(
-        fig,
-        width="stretch"
-    )
-
-# ============================================================
-# LOCATION TYPES
-# ============================================================
-
-with col2:
-    st.subheader("Crime by Location")
-
-    location_counts = (
-        filtered_df["Location Description"]
-        .value_counts()
-        .head(10)
-        .reset_index()
-    )
-
-    location_counts.columns = ["Location", "Count"]
-
-    fig = px.bar(
-        location_counts,
-        x="Count",
-        y="Location",
-        orientation="h",
-        title="Top 10 locations"
-    )
-
-    fig.update_layout(
-        yaxis=dict(autorange="reversed"),
-        xaxis_title="Number of crimes",
-        yaxis_title=""
-    )
-
-    st.plotly_chart(
-        fig,
-        width="stretch"
-    )
 
 # ============================================================
 # ARREST ANALYSIS
@@ -615,22 +720,26 @@ st.divider()
 
 st.subheader("Arrest Analysis")
 
-arrest_data = (
-    filtered_df["Arrest"]
-    .astype(str)
-    .str.lower()
-    .value_counts()
-    .reset_index()
-)
 
-arrest_data.columns = ["Arrest", "Count"]
+arrest_query = f"""
+SELECT
+    CASE
+        WHEN LOWER(CAST(Arrest AS VARCHAR)) = 'true'
+        THEN 'Arrest'
+        ELSE 'No arrest'
+    END AS Arrest,
+    COUNT(*) AS Count
+FROM crimes
+WHERE {where_clause}
+GROUP BY Arrest
+"""
 
-arrest_data["Arrest"] = arrest_data["Arrest"].replace(
-    {
-        "true": "Arrest",
-        "false": "No arrest"
-    }
-)
+
+arrest_data = con.execute(
+    arrest_query,
+    params
+).df()
+
 
 fig = px.pie(
     arrest_data,
@@ -644,6 +753,7 @@ st.plotly_chart(
     width="stretch"
 )
 
+
 # ============================================================
 # DISTRICT ANALYSIS
 # ============================================================
@@ -652,13 +762,23 @@ st.divider()
 
 st.subheader("Crime by District")
 
-district_data = (
-    filtered_df["District"]
-    .value_counts()
-    .reset_index()
-)
 
-district_data.columns = ["District", "Count"]
+district_query = f"""
+SELECT
+    District,
+    COUNT(*) AS Count
+FROM crimes
+WHERE {where_clause}
+GROUP BY District
+ORDER BY District
+"""
+
+
+district_data = con.execute(
+    district_query,
+    params
+).df()
+
 
 fig = px.bar(
     district_data,
@@ -677,6 +797,7 @@ st.plotly_chart(
     width="stretch"
 )
 
+
 # ============================================================
 # MAP
 # ============================================================
@@ -685,13 +806,25 @@ st.divider()
 
 st.subheader("Geographic Distribution")
 
-map_df = filtered_df[
-    ["Latitude", "Longitude", "Primary Type"]
-].dropna()
 
-# Limit points for performance
-if len(map_df) > 10000:
-    map_df = map_df.sample(10000, random_state=42)
+map_query = f"""
+SELECT
+    Latitude,
+    Longitude,
+    "Primary Type"
+FROM crimes
+WHERE {where_clause}
+  AND Latitude IS NOT NULL
+  AND Longitude IS NOT NULL
+USING SAMPLE 10000
+"""
+
+
+map_df = con.execute(
+    map_query,
+    params
+).df()
+
 
 if not map_df.empty:
 
@@ -707,11 +840,15 @@ if not map_df.empty:
     )
 
     st.caption(
-        "The map shows a sample of reported crime locations."
+        "The map shows a sample of up to 10,000 reported crime locations."
     )
 
 else:
-    st.info("No geographic data available for the selected filters.")
+
+    st.info(
+        "No geographic data available for the selected filters."
+    )
+
 
 # ============================================================
 # DATA TABLE
@@ -720,6 +857,7 @@ else:
 st.divider()
 
 st.subheader("Data Table")
+
 
 display_columns = [
     "ID",
@@ -736,33 +874,80 @@ display_columns = [
     "Year"
 ]
 
-display_columns = [
-    col for col in display_columns
-    if col in filtered_df.columns
-]
+
+display_columns_sql = ", ".join(
+    f'"{column}"'
+    for column in display_columns
+)
+
+
+data_table_query = f"""
+SELECT
+    {display_columns_sql}
+FROM crimes
+WHERE {where_clause}
+ORDER BY
+    TRY_CAST(
+        "Date" AS TIMESTAMP
+    ) DESC
+LIMIT 1000
+"""
+
+
+display_df = con.execute(
+    data_table_query,
+    params
+).df()
+
 
 st.dataframe(
-    filtered_df[display_columns].sort_values(
-        "Date",
-        ascending=False
-    ).head(1000),
+    display_df,
     width="stretch",
     height=500
 )
+
 
 # ============================================================
 # DOWNLOAD
 # ============================================================
 
-csv = filtered_df.to_csv(index=False)
+st.caption(
+    "The download contains the filtered records."
+)
+
+
+@st.cache_data
+def create_download_data(
+    where_clause,
+    params
+):
+
+    download_query = f"""
+    SELECT *
+    FROM crimes
+    WHERE {where_clause}
+    """
+
+    download_df = con.execute(
+        download_query,
+        params
+    ).df()
+
+    return download_df.to_csv(index=False)
+
+
+download_data = create_download_data(
+    where_clause,
+    params
+)
+
 
 st.download_button(
     label="Download filtered data",
-    data=csv,
+    data=download_data,
     file_name="chicago_crimes_filtered.csv",
     mime="text/csv"
 )
-
 
 
 # ============================================================
