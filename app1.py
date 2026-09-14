@@ -249,7 +249,13 @@ kpi = con.execute(
 
 
 total_crimes = int(kpi["total_crimes"])
-total_arrests = int(kpi["total_arrests"] or 0)
+
+if pd.isna(kpi["total_arrests"]):
+    total_arrests = 0
+    no_arrests = True
+else:
+    total_arrests = int(kpi["total_arrests"])
+    no_arrests = False
 
 arrest_rate = (
     total_arrests / total_crimes * 100
@@ -308,6 +314,9 @@ col4.metric(
 st.caption(
     f"Selected period: {selected_years[0]}–{selected_years[1]}"
 )
+
+if no_arrests:
+    st.info("No arrests were recorded for the selected filters.")
 
 
 # ============================================================
