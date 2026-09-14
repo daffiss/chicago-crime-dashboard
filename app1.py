@@ -32,7 +32,11 @@ def load_data(path):
     df = pd.read_csv(path)
 
     # Convert date
-    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    df["Date"] = pd.to_datetime(
+    df["Date"],
+    format="%m/%d/%Y %I:%M:%S %p",
+    errors="coerce"
+    )
 
     # Make year numeric
     df["Year"] = pd.to_numeric(df["Year"], errors="coerce")
@@ -239,7 +243,7 @@ if not filtered_df.empty:
 
     st.plotly_chart(
         fig,
-        use_container_width=True
+        width="stretch"
     )
 
 else:
@@ -513,7 +517,7 @@ for column in change_columns:
 
 st.dataframe(
     styled_table,
-    use_container_width=True,
+    width="stretch",
     hide_index=True
 )
 
@@ -563,7 +567,7 @@ with col1:
 
     st.plotly_chart(
         fig,
-        use_container_width=True
+        width="stretch"
     )
 
 # ============================================================
@@ -598,7 +602,7 @@ with col2:
 
     st.plotly_chart(
         fig,
-        use_container_width=True
+        width="stretch"
     )
 
 # ============================================================
@@ -635,7 +639,7 @@ fig = px.pie(
 
 st.plotly_chart(
     fig,
-    use_container_width=True
+    width="stretch"
 )
 
 # ============================================================
@@ -668,7 +672,7 @@ fig.update_layout(
 
 st.plotly_chart(
     fig,
-    use_container_width=True
+    width="stretch"
 )
 
 # ============================================================
@@ -740,7 +744,7 @@ st.dataframe(
         "Date",
         ascending=False
     ).head(1000),
-    use_container_width=True,
+    width="stretch",
     height=500
 )
 
