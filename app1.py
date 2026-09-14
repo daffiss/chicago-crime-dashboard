@@ -18,7 +18,9 @@ st.set_page_config(
 )
 
 # Change this to your dataset path
-DATA_PATH = Path("chicago_crimes.csv")
+from pathlib import Path
+
+DATA_PATH = Path(__file__).parent / "chicago_crimes.csv"
 
 
 # ============================================================
