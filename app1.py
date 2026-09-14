@@ -31,6 +31,8 @@ DATA_PATH = Path(__file__).parent / "chicago_crimes.csv"
 def load_data(path):
     df = pd.read_csv(path)
 
+    st.write(f"DataFrame memory usage: {df.memory_usage(deep=True).sum() / 1024**2:.2f} MB")
+
     # Convert date
     df["Date"] = pd.to_datetime(
     df["Date"],
@@ -760,6 +762,8 @@ st.download_button(
     file_name="chicago_crimes_filtered.csv",
     mime="text/csv"
 )
+
+
 
 # ============================================================
 # FOOTER
