@@ -21,6 +21,37 @@ DATA_PATH = Path(__file__).parent / "chicago_crimes.csv"
 
 
 # ============================================================
+# COLOR THEME
+# ============================================================
+# Red-led "alert" palette applied dashboard-wide so every
+# chart (bars, lines, pies, the map) shares the same look.
+
+COLOR_SEQUENCE = [
+    "#D7263D",  # main red
+    "#2E2E38",  # charcoal
+    "#F2A65A",  # amber
+    "#5C7A99",  # slate blue
+    "#8C271E",  # deep brick red
+    "#C0C0C0",  # silver grey
+    "#E8871E",  # burnt orange
+    "#6B4226",  # dark brown
+    "#A8A8A8",  # neutral grey
+    "#F4D35E",  # warm gold
+]
+
+COLOR_CONTINUOUS_SCALE = [
+    "#1A1A1D",
+    "#4E4E50",
+    "#8C271E",
+    "#D7263D",
+    "#F2A65A",
+]
+
+px.defaults.color_discrete_sequence = COLOR_SEQUENCE
+px.defaults.color_continuous_scale = COLOR_CONTINUOUS_SCALE
+
+
+# ============================================================
 # DUCKDB CONNECTION
 # ============================================================
 
@@ -30,7 +61,7 @@ def get_connection():
 
     csv_path = str(DATA_PATH).replace("\\", "/").replace("'", "''")
 
-    con.execute(
+    con.cursor().execute(
         f"""
         CREATE OR REPLACE VIEW crimes AS
         SELECT *
@@ -49,7 +80,7 @@ con = get_connection()
 
 @st.cache_data
 def get_years():
-    return con.execute(
+    return con.cursor().execute(
         """
         SELECT DISTINCT CAST(Year AS INTEGER) AS Year
         FROM crimes
@@ -61,7 +92,7 @@ def get_years():
 
 @st.cache_data
 def get_crime_types():
-    return con.execute(
+    return con.cursor().execute(
         """
         SELECT DISTINCT "Primary Type"
         FROM crimes
@@ -73,7 +104,7 @@ def get_crime_types():
 
 @st.cache_data
 def get_districts():
-    return con.execute(
+    return con.cursor().execute(
         """
         SELECT DISTINCT District
         FROM crimes
@@ -85,7 +116,7 @@ def get_districts():
 
 @st.cache_data
 def get_locations():
-    return con.execute(
+    return con.cursor().execute(
         """
         SELECT DISTINCT "Location Description"
         FROM crimes
@@ -242,10 +273,19 @@ WHERE {where_clause}
 """
 
 
-kpi = con.execute(
+kpi_df = con.cursor().execute(
     kpi_query,
     params
-).df().iloc[0]
+).df()
+
+if kpi_df is None or kpi_df.empty:
+    kpi = pd.Series({
+        "total_crimes": 0,
+        "total_arrests": 0,
+        "crime_types": 0
+    })
+else:
+    kpi = kpi_df.iloc[0]
 
 
 total_crimes = int(kpi["total_crimes"])
@@ -277,14 +317,14 @@ ORDER BY count DESC
 LIMIT 1
 """
 
-most_common_result = con.execute(
+most_common_result = con.cursor().execute(
     most_common_crime_query,
     params
 ).df()
 
 most_common_crime = (
     most_common_result.iloc[0]["crime"]
-    if not most_common_result.empty
+    if most_common_result is not None and not most_common_result.empty
     else "N/A"
 )
 
@@ -338,7 +378,7 @@ GROUP BY Year
 ORDER BY Year
 """
 
-yearly_crimes = con.execute(
+yearly_crimes = con.cursor().execute(
     trend_query,
     params
 ).df()
@@ -362,12 +402,18 @@ if not yearly_crimes.empty:
     fig.update_layout(
         xaxis_title="Year",
         yaxis_title="Number of reported crimes",
-        hovermode="x unified"
+        hovermode="x unified",
+        yaxis_tickformat=","
     )
 
     # Force the x-axis to be categorical
     fig.update_xaxes(
         type="category"
+    )
+
+    # Show full numbers (no "k" abbreviation) on hover
+    fig.update_traces(
+        hovertemplate="%{y:,}<extra></extra>"
     )
 
     st.plotly_chart(
@@ -406,7 +452,7 @@ with col1:
     LIMIT 10
     """
 
-    crime_counts = con.execute(
+    crime_counts = con.cursor().execute(
         crime_query,
         params
     ).df()
@@ -416,13 +462,18 @@ with col1:
         x="Count",
         y="Crime Type",
         orientation="h",
-        title="Top 10 crime types"
+        title="Top 10 crime types (based on current filters)"
     )
 
     fig.update_layout(
         yaxis=dict(autorange="reversed"),
         xaxis_title="Number of crimes",
-        yaxis_title=""
+        yaxis_title="",
+        xaxis_tickformat=","
+    )
+
+    fig.update_traces(
+        hovertemplate="%{y}<br>%{x:,} crimes<extra></extra>"
     )
 
     st.plotly_chart(
@@ -450,7 +501,7 @@ with col2:
     LIMIT 10
     """
 
-    location_counts = con.execute(
+    location_counts = con.cursor().execute(
         location_query,
         params
     ).df()
@@ -466,7 +517,12 @@ with col2:
     fig.update_layout(
         yaxis=dict(autorange="reversed"),
         xaxis_title="Number of crimes",
-        yaxis_title=""
+        yaxis_title="",
+        xaxis_tickformat=","
+    )
+
+    fig.update_traces(
+        hovertemplate="%{y}<br>%{x:,} crimes<extra></extra>"
     )
 
     st.plotly_chart(
@@ -481,15 +537,19 @@ with col2:
 st.subheader("Crime Trends Table")
 
 
-crime_categories = [
-    "ROBBERY",
-    "ASSAULT",
-    "BATTERY",
-    "BURGLARY",
-    "THEFT",
-    "MOTOR VEHICLE THEFT",
-    "HOMICIDE"
-]
+crime_categories = (
+    selected_crimes
+    if selected_crimes
+    else [
+        "ROBBERY",
+        "ASSAULT",
+        "BATTERY",
+        "BURGLARY",
+        "THEFT",
+        "MOTOR VEHICLE THEFT",
+        "HOMICIDE"
+    ]
+)
 
 
 # ------------------------------------------------------------
@@ -508,7 +568,7 @@ ORDER BY Year
 """
 
 
-table_raw = con.execute(
+table_raw = con.cursor().execute(
     table_query,
     params
 ).df()
@@ -689,22 +749,36 @@ def highlight_change(value):
     return ""
 
 
-change_columns = [
-    column
-    for column in table.columns
-    if "Change From Previous Year" in column
-]
+# ------------------------------------------------------------
+# Transpose: rows = metrics (Count / Change per crime type),
+# columns = years. Easier to scan year-over-year this way.
+# ------------------------------------------------------------
+
+table = table.set_index("Year")
+transposed = table.T
+transposed.index.name = "Metric"
+transposed = transposed.reset_index()
+
+change_row_mask = transposed["Metric"].str.contains(
+    "Change From Previous Year"
+)
 
 
-styled_table = table.style
+def highlight_row(row):
 
-for column in change_columns:
+    if not change_row_mask.loc[row.name]:
+        return ["" for _ in row]
 
-    styled_table = styled_table.map(
-        highlight_change,
-        subset=[column]
-    )
+    return [
+        "" if column == "Metric" else highlight_change(value)
+        for column, value in row.items()
+    ]
 
+
+styled_table = transposed.style.apply(
+    highlight_row,
+    axis=1
+)
 
 st.dataframe(
     styled_table,
@@ -714,11 +788,11 @@ st.dataframe(
 
 
 st.caption(
-    "Percentage changes show the year-over-year change in reported "
-    "crime counts. 2023 is shown without a percentage change because "
-    "the dataset starts on January 1, 2023. 2026 is shown as "
-    "year-to-date data and is therefore not used for year-over-year "
-    "percentage comparisons."
+    "Columns are years, rows show counts and year-over-year percentage "
+    "changes per crime category. 2023 is shown without a percentage "
+    "change because the dataset starts on January 1, 2023. 2026 is "
+    "shown as year-to-date data and is therefore not used for "
+    "year-over-year percentage comparisons."
 )
 
 # ============================================================
@@ -744,7 +818,7 @@ GROUP BY Arrest
 """
 
 
-arrest_data = con.execute(
+arrest_data = con.cursor().execute(
     arrest_query,
     params
 ).df()
@@ -754,7 +828,12 @@ fig = px.pie(
     arrest_data,
     names="Arrest",
     values="Count",
-    title="Crimes resulting in an arrest"
+    title="Crimes resulting in an arrest",
+    color_discrete_sequence=["#D7263D", "#FF6F91"]
+)
+
+fig.update_traces(
+    hovertemplate="%{label}<br>%{value:,} crimes (%{percent})<extra></extra>"
 )
 
 st.plotly_chart(
@@ -763,48 +842,215 @@ st.plotly_chart(
 )
 
 
+
+
 # ============================================================
-# DISTRICT ANALYSIS
+# CRIME INTENSITY: DAY VS HOUR
 # ============================================================
 
 st.divider()
 
-st.subheader("Crime by District")
+st.subheader("Crime Intensity: Day vs Hour")
 
+st.caption(
+    "A heatmap of when crimes are reported — darker cells mean more "
+    "reported crimes for that day/hour combination, based on the "
+    "current filters."
+)
 
-district_query = f"""
+intensity_query = f"""
 SELECT
-    District,
+    EXTRACT(dow FROM TRY_CAST("Date" AS TIMESTAMP)) AS DayOfWeek,
+    EXTRACT(hour FROM TRY_CAST("Date" AS TIMESTAMP)) AS Hour,
     COUNT(*) AS Count
 FROM crimes
 WHERE {where_clause}
-GROUP BY District
-ORDER BY District
+  AND TRY_CAST("Date" AS TIMESTAMP) IS NOT NULL
+GROUP BY DayOfWeek, Hour
 """
 
-
-district_data = con.execute(
-    district_query,
+intensity_data = con.cursor().execute(
+    intensity_query,
     params
 ).df()
 
+if not intensity_data.empty:
 
-fig = px.bar(
-    district_data,
-    x="District",
-    y="Count",
-    title="Reported crimes by police district"
-)
+    heatmap_day_names = [
+        "Sunday", "Monday", "Tuesday", "Wednesday",
+        "Thursday", "Friday", "Saturday"
+    ]
 
-fig.update_layout(
-    xaxis_title="District",
-    yaxis_title="Number of crimes"
-)
+    intensity_pivot = (
+        intensity_data
+        .pivot(index="DayOfWeek", columns="Hour", values="Count")
+        .reindex(index=range(7), columns=range(24), fill_value=0)
+    )
+    intensity_pivot.index = heatmap_day_names
 
-st.plotly_chart(
-    fig,
-    width="stretch"
-)
+    fig = px.imshow(
+        intensity_pivot,
+        labels=dict(x="Hour of day", y="", color="Crimes"),
+        aspect="auto",
+        title="When do crimes happen most?"
+    )
+
+    fig.update_layout(
+        coloraxis_colorbar=dict(tickformat=",")
+    )
+
+    fig.update_traces(
+        hovertemplate="%{y}, %{x}:00<br>%{z:,} crimes<extra></extra>"
+    )
+
+    st.plotly_chart(
+        fig,
+        width="stretch"
+    )
+
+else:
+
+    st.info(
+        "No date data available to compute crime intensity for the "
+        "selected filters."
+    )
+
+
+# ============================================================
+# TIME PATTERNS
+# ============================================================
+
+st.divider()
+
+st.subheader("Time Patterns")
+
+time_query = f"""
+SELECT
+    EXTRACT(dow FROM TRY_CAST("Date" AS TIMESTAMP)) AS DayOfWeek,
+    EXTRACT(hour FROM TRY_CAST("Date" AS TIMESTAMP)) AS Hour,
+    COUNT(*) AS Count
+FROM crimes
+WHERE {where_clause}
+  AND TRY_CAST("Date" AS TIMESTAMP) IS NOT NULL
+GROUP BY DayOfWeek, Hour
+"""
+
+time_data = con.cursor().execute(
+    time_query,
+    params
+).df()
+
+if not time_data.empty:
+
+    day_names = [
+        "Sunday", "Monday", "Tuesday", "Wednesday",
+        "Thursday", "Friday", "Saturday"
+    ]
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+
+        by_day = (
+            time_data
+            .groupby("DayOfWeek")["Count"]
+            .sum()
+            .reindex(range(7), fill_value=0)
+        )
+        by_day.index = day_names
+
+        fig = px.bar(
+            x=by_day.index,
+            y=by_day.values,
+            title="Crimes by day of week"
+        )
+
+        fig.update_layout(
+            xaxis_title="",
+            yaxis_title="Number of crimes",
+            yaxis_tickformat=","
+        )
+
+        fig.update_traces(
+            hovertemplate="%{x}<br>%{y:,} crimes<extra></extra>"
+        )
+
+        st.plotly_chart(
+            fig,
+            width="stretch"
+        )
+
+    with col2:
+
+        by_hour = (
+            time_data
+            .groupby("Hour")["Count"]
+            .sum()
+            .reindex(range(24), fill_value=0)
+        )
+
+        fig = px.bar(
+            x=by_hour.index,
+            y=by_hour.values,
+            title="Crimes by hour of day"
+        )
+
+        fig.update_layout(
+            xaxis_title="Hour of day",
+            yaxis_title="Number of crimes",
+            yaxis_tickformat=","
+        )
+
+        fig.update_traces(
+            hovertemplate="Hour %{x}<br>%{y:,} crimes<extra></extra>"
+        )
+
+        st.plotly_chart(
+            fig,
+            width="stretch"
+        )
+
+    domestic_query = f"""
+    SELECT
+        CASE
+            WHEN LOWER(CAST(Domestic AS VARCHAR)) = 'true'
+            THEN 'Domestic'
+            ELSE 'Non-domestic'
+        END AS Domestic,
+        COUNT(*) AS Count
+    FROM crimes
+    WHERE {where_clause}
+    GROUP BY Domestic
+    """
+
+    domestic_data = con.cursor().execute(
+        domestic_query,
+        params
+    ).df()
+
+    fig = px.pie(
+        domestic_data,
+        names="Domestic",
+        values="Count",
+        title="Domestic vs. non-domestic incidents",
+        color_discrete_sequence=["#D7263D", "#FF6F91"]
+    )
+
+    fig.update_traces(
+        hovertemplate="%{label}<br>%{value:,} crimes (%{percent})<extra></extra>"
+    )
+
+    st.plotly_chart(
+        fig,
+        width="stretch"
+    )
+
+else:
+
+    st.info(
+        "No date data available to compute time patterns for the "
+        "selected filters."
+    )
 
 
 # ============================================================
@@ -829,27 +1075,80 @@ USING SAMPLE 10000
 """
 
 
-map_df = con.execute(
+map_df = con.cursor().execute(
     map_query,
     params
 ).df()
 
 
+def generate_distinct_map_colors(count):
+    """Generate `count` visually distinct, high-contrast hex colors
+    (evenly spaced hues, strong saturation) so map points never repeat
+    the same color, and still stand out against a light basemap."""
+
+    import colorsys
+
+    colors = []
+
+    for i in range(count):
+        hue = i / count
+        red, green, blue = colorsys.hsv_to_rgb(hue, 0.85, 0.80)
+
+        colors.append(
+            "#{:02X}{:02X}{:02X}".format(
+                int(red * 255),
+                int(green * 255),
+                int(blue * 255)
+            )
+        )
+
+    return colors
+
+
 if not map_df.empty:
 
-    st.map(
-        map_df.rename(
-            columns={
-                "Latitude": "latitude",
-                "Longitude": "longitude"
-            }
-        ),
-        latitude="latitude",
-        longitude="longitude"
+    sample_size = len(map_df)
+    sample_pct = (
+        sample_size / total_crimes * 100
+        if total_crimes > 0
+        else 0
+    )
+
+    map_crime_types = map_df["Primary Type"].nunique()
+    map_color_sequence = generate_distinct_map_colors(map_crime_types)
+
+    fig = px.scatter_mapbox(
+        map_df,
+        lat="Latitude",
+        lon="Longitude",
+        color="Primary Type",
+        color_discrete_sequence=map_color_sequence,
+        hover_name="Primary Type",
+        zoom=9,
+        height=600,
+        opacity=0.85
+    )
+
+    fig.update_traces(
+        marker=dict(size=12)
+    )
+
+    fig.update_layout(
+        mapbox_style="open-street-map",
+        margin=dict(l=0, r=0, t=0, b=0),
+        legend_title_text="Crime type"
+    )
+
+    st.plotly_chart(
+        fig,
+        width="stretch"
     )
 
     st.caption(
-        "The map shows a sample of up to 10,000 reported crime locations."
+        f"The map shows a random sample of {sample_size:,} reported crime "
+        f"locations out of {total_crimes:,} matching the current filters "
+        f"({sample_pct:.1f}%). Points are colored by crime type — "
+        "hover over a point to see its type."
     )
 
 else:
@@ -858,6 +1157,67 @@ else:
         "No geographic data available for the selected filters."
     )
 
+# ============================================================
+# DISTRICT ANALYSIS
+# ============================================================
+
+st.divider()
+
+st.subheader("Crime by District")
+
+
+district_query = f"""
+SELECT
+    District,
+    COUNT(*) AS Count
+FROM crimes
+WHERE {where_clause}
+GROUP BY District
+ORDER BY District
+"""
+
+
+district_data = con.cursor().execute(
+    district_query,
+    params
+).df()
+
+if not district_data.empty:
+
+    district_data["District"] = district_data["District"].astype(str)
+
+    fig = px.treemap(
+        district_data,
+        path=["District"],
+        values="Count",
+        color="Count",
+        color_continuous_scale=COLOR_CONTINUOUS_SCALE,
+        title="Reported crimes by police district"
+    )
+
+    fig.update_layout(
+        coloraxis_colorbar=dict(
+            title="Crimes",
+            tickformat=","
+        ),
+        margin=dict(t=50, l=10, r=10, b=10)
+    )
+
+    fig.update_traces(
+        hovertemplate="District %{label}<br>%{value:,} crimes<extra></extra>",
+        texttemplate="District %{label}<br>%{value:,}"
+    )
+
+    st.plotly_chart(
+        fig,
+        width="stretch"
+    )
+
+else:
+
+    st.info(
+        "No district data available for the selected filters."
+    )
 
 # ============================================================
 # DATA TABLE
@@ -903,7 +1263,7 @@ LIMIT 1000
 """
 
 
-display_df = con.execute(
+display_df = con.cursor().execute(
     data_table_query,
     params
 ).df()
@@ -937,7 +1297,7 @@ def create_download_data(
     WHERE {where_clause}
     """
 
-    download_df = con.execute(
+    download_df = con.cursor().execute(
         download_query,
         params
     ).df()
