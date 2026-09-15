@@ -842,68 +842,6 @@ st.plotly_chart(
 )
 
 
-# ============================================================
-# DISTRICT ANALYSIS
-# ============================================================
-
-st.divider()
-
-st.subheader("Crime by District")
-
-
-district_query = f"""
-SELECT
-    District,
-    COUNT(*) AS Count
-FROM crimes
-WHERE {where_clause}
-GROUP BY District
-ORDER BY District
-"""
-
-
-district_data = con.cursor().execute(
-    district_query,
-    params
-).df()
-
-if not district_data.empty:
-
-    district_data["District"] = district_data["District"].astype(str)
-
-    fig = px.treemap(
-        district_data,
-        path=["District"],
-        values="Count",
-        color="Count",
-        color_continuous_scale=COLOR_CONTINUOUS_SCALE,
-        title="Reported crimes by police district"
-    )
-
-    fig.update_layout(
-        coloraxis_colorbar=dict(
-            title="Crimes",
-            tickformat=","
-        ),
-        margin=dict(t=50, l=10, r=10, b=10)
-    )
-
-    fig.update_traces(
-        hovertemplate="District %{label}<br>%{value:,} crimes<extra></extra>",
-        texttemplate="District %{label}<br>%{value:,}"
-    )
-
-    st.plotly_chart(
-        fig,
-        width="stretch"
-    )
-
-else:
-
-    st.info(
-        "No district data available for the selected filters."
-    )
-
 
 # ============================================================
 # CRIME INTENSITY: DAY VS HOUR
@@ -1117,12 +1055,12 @@ else:
 # ============================================================
 # MAP
 # ============================================================
-
+ 
 st.divider()
-
+ 
 st.subheader("Geographic Distribution")
-
-
+ 
+ 
 map_query = f"""
 SELECT
     Latitude,
@@ -1134,27 +1072,27 @@ WHERE {where_clause}
   AND Longitude IS NOT NULL
 USING SAMPLE 10000
 """
-
-
+ 
+ 
 map_df = con.cursor().execute(
     map_query,
     params
 ).df()
-
-
+ 
+ 
 def generate_distinct_map_colors(count):
     """Generate `count` visually distinct, high-contrast hex colors
     (evenly spaced hues, strong saturation) so map points never repeat
     the same color, and still stand out against a light basemap."""
-
+ 
     import colorsys
-
+ 
     colors = []
-
+ 
     for i in range(count):
         hue = i / count
         red, green, blue = colorsys.hsv_to_rgb(hue, 0.85, 0.80)
-
+ 
         colors.append(
             "#{:02X}{:02X}{:02X}".format(
                 int(red * 255),
@@ -1162,22 +1100,22 @@ def generate_distinct_map_colors(count):
                 int(blue * 255)
             )
         )
-
+ 
     return colors
-
-
+ 
+ 
 if not map_df.empty:
-
+ 
     sample_size = len(map_df)
     sample_pct = (
         sample_size / total_crimes * 100
         if total_crimes > 0
         else 0
     )
-
+ 
     map_crime_types = map_df["Primary Type"].nunique()
     map_color_sequence = generate_distinct_map_colors(map_crime_types)
-
+ 
     fig = px.scatter_map(
         map_df,
         lat="Latitude",
@@ -1189,15 +1127,84 @@ if not map_df.empty:
         height=600,
         opacity=0.85
     )
-
+ 
     fig.update_traces(
         marker=dict(size=12)
     )
-
+ 
     fig.update_layout(
-        map_style="open-street-map",
+        map_style="carto-positron",
         margin=dict(l=0, r=0, t=0, b=0),
         legend_title_text="Crime type"
+    )
+ 
+    st.plotly_chart(
+        fig,
+        width="stretch"
+    )
+ 
+    st.caption(
+        f"The map shows a random sample of {sample_size:,} reported crime "
+        f"locations out of {total_crimes:,} matching the current filters "
+        f"({sample_pct:.1f}%). Points are colored by crime type — "
+        "hover over a point to see its type."
+    )
+ 
+else:
+ 
+    st.info(
+        "No geographic data available for the selected filters."
+    )
+ 
+ # ============================================================
+# DISTRICT ANALYSIS
+# ============================================================
+
+st.divider()
+
+st.subheader("Crime by District")
+
+
+district_query = f"""
+SELECT
+    District,
+    COUNT(*) AS Count
+FROM crimes
+WHERE {where_clause}
+GROUP BY District
+ORDER BY District
+"""
+
+
+district_data = con.cursor().execute(
+    district_query,
+    params
+).df()
+
+if not district_data.empty:
+
+    district_data["District"] = district_data["District"].astype(str)
+
+    fig = px.treemap(
+        district_data,
+        path=["District"],
+        values="Count",
+        color="Count",
+        color_continuous_scale=COLOR_CONTINUOUS_SCALE,
+        title="Reported crimes by police district"
+    )
+
+    fig.update_layout(
+        coloraxis_colorbar=dict(
+            title="Crimes",
+            tickformat=","
+        ),
+        margin=dict(t=50, l=10, r=10, b=10)
+    )
+
+    fig.update_traces(
+        hovertemplate="District %{label}<br>%{value:,} crimes<extra></extra>",
+        texttemplate="District %{label}<br>%{value:,}"
     )
 
     st.plotly_chart(
@@ -1205,19 +1212,11 @@ if not map_df.empty:
         width="stretch"
     )
 
-    st.caption(
-        f"The map shows a random sample of {sample_size:,} reported crime "
-        f"locations out of {total_crimes:,} matching the current filters "
-        f"({sample_pct:.1f}%). Points are colored by crime type — "
-        "hover over a point to see its type."
-    )
-
 else:
 
     st.info(
-        "No geographic data available for the selected filters."
+        "No district data available for the selected filters."
     )
-
 
 # ============================================================
 # DATA TABLE
