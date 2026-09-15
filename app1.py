@@ -842,6 +842,67 @@ st.plotly_chart(
 )
 
 
+# ============================================================
+# DISTRICT ANALYSIS
+# ============================================================
+
+st.divider()
+
+st.subheader("Crime by District")
+
+
+district_query = f"""
+SELECT
+    District,
+    COUNT(*) AS Count
+FROM crimes
+WHERE {where_clause}
+GROUP BY District
+ORDER BY District
+"""
+
+
+district_data = con.cursor().execute(
+    district_query,
+    params
+).df()
+
+if not district_data.empty:
+
+    district_data["District"] = district_data["District"].astype(str)
+
+    fig = px.treemap(
+        district_data,
+        path=["District"],
+        values="Count",
+        color="Count",
+        color_continuous_scale=COLOR_CONTINUOUS_SCALE,
+        title="Reported crimes by police district"
+    )
+
+    fig.update_layout(
+        coloraxis_colorbar=dict(
+            title="Crimes",
+            tickformat=","
+        ),
+        margin=dict(t=50, l=10, r=10, b=10)
+    )
+
+    fig.update_traces(
+        hovertemplate="District %{label}<br>%{value:,} crimes<extra></extra>",
+        texttemplate="District %{label}<br>%{value:,}"
+    )
+
+    st.plotly_chart(
+        fig,
+        width="stretch"
+    )
+
+else:
+
+    st.info(
+        "No district data available for the selected filters."
+    )
 
 
 # ============================================================
@@ -1117,7 +1178,7 @@ if not map_df.empty:
     map_crime_types = map_df["Primary Type"].nunique()
     map_color_sequence = generate_distinct_map_colors(map_crime_types)
 
-    fig = px.scatter_mapbox(
+    fig = px.scatter_map(
         map_df,
         lat="Latitude",
         lon="Longitude",
@@ -1134,7 +1195,7 @@ if not map_df.empty:
     )
 
     fig.update_layout(
-        mapbox_style="open-street-map",
+        map_style="open-street-map",
         margin=dict(l=0, r=0, t=0, b=0),
         legend_title_text="Crime type"
     )
@@ -1157,67 +1218,6 @@ else:
         "No geographic data available for the selected filters."
     )
 
-# ============================================================
-# DISTRICT ANALYSIS
-# ============================================================
-
-st.divider()
-
-st.subheader("Crime by District")
-
-
-district_query = f"""
-SELECT
-    District,
-    COUNT(*) AS Count
-FROM crimes
-WHERE {where_clause}
-GROUP BY District
-ORDER BY District
-"""
-
-
-district_data = con.cursor().execute(
-    district_query,
-    params
-).df()
-
-if not district_data.empty:
-
-    district_data["District"] = district_data["District"].astype(str)
-
-    fig = px.treemap(
-        district_data,
-        path=["District"],
-        values="Count",
-        color="Count",
-        color_continuous_scale=COLOR_CONTINUOUS_SCALE,
-        title="Reported crimes by police district"
-    )
-
-    fig.update_layout(
-        coloraxis_colorbar=dict(
-            title="Crimes",
-            tickformat=","
-        ),
-        margin=dict(t=50, l=10, r=10, b=10)
-    )
-
-    fig.update_traces(
-        hovertemplate="District %{label}<br>%{value:,} crimes<extra></extra>",
-        texttemplate="District %{label}<br>%{value:,}"
-    )
-
-    st.plotly_chart(
-        fig,
-        width="stretch"
-    )
-
-else:
-
-    st.info(
-        "No district data available for the selected filters."
-    )
 
 # ============================================================
 # DATA TABLE
