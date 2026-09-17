@@ -587,11 +587,6 @@ available_categories = [
 ]
 
 
-table = pd.DataFrame()
-
-table["Year"] = table_years
-
-
 def calculate_change(
     counts,
     year,
@@ -602,10 +597,6 @@ def calculate_change(
     if year == 2023:
         return np.nan
 
-    # 2026 is incomplete / year-to-date.
-    # Do not compare it with complete 2025.
-    if year == 2026:
-        return np.nan
 
     previous_year = year - 1
 
@@ -625,12 +616,23 @@ def calculate_change(
     )
 
 
+def format_cell_value(count, change):
+    if pd.isna(change):
+        return f"{count:,}"
+    if change > 0:
+        return f"{count:,}  🔴 +{change:.1f}%"
+    elif change < 0:
+        return f"{count:,}  🟢 {change:.1f}%"
+    return f"{count:,}  ⚪ 0.0%"
+
+
 # ------------------------------------------------------------
-# Crime categories
+# Build rows per crime category (Count and Change together)
 # ------------------------------------------------------------
+
+table_rows = []
 
 for crime in available_categories:
-
     crime_counts = (
         table_raw[
             table_raw["Primary Type"] == crime
@@ -639,19 +641,13 @@ for crime in available_categories:
         .to_dict()
     )
 
-    table[f"{crime} — Count"] = [
-        int(crime_counts.get(year, 0))
-        for year in table_years
-    ]
+    row = {"Crime Type": crime}
+    for year in table_years:
+        cnt = int(crime_counts.get(year, 0))
+        chg = calculate_change(crime_counts, year, table_years)
+        row[str(year)] = format_cell_value(cnt, chg)
 
-    table[f"{crime} — Change From Previous Year"] = [
-        calculate_change(
-            crime_counts,
-            year,
-            table_years
-        )
-        for year in table_years
-    ]
+    table_rows.append(row)
 
 
 # ------------------------------------------------------------
@@ -665,123 +661,19 @@ total_yearly = (
     .to_dict()
 )
 
+total_row = {"Crime Type": "Total Reported Crimes"}
+for year in table_years:
+    cnt = int(total_yearly.get(year, 0))
+    chg = calculate_change(total_yearly, year, table_years)
+    total_row[str(year)] = format_cell_value(cnt, chg)
 
-table["Total Reported Crimes — Count"] = [
-    int(total_yearly.get(year, 0))
-    for year in table_years
-]
-
-table["Total Reported Crimes — Change From Previous Year"] = [
-    calculate_change(
-        total_yearly,
-        year,
-        table_years
-    )
-    for year in table_years
-]
+table_rows.append(total_row)
 
 
-# ------------------------------------------------------------
-# Format count columns
-# ------------------------------------------------------------
-
-for column in table.columns:
-
-    if "Count" in column:
-
-        table[column] = (
-            table[column]
-            .astype(int)
-            .map(lambda x: f"{x:,}")
-        )
-
-
-# ------------------------------------------------------------
-# Format change columns
-# ------------------------------------------------------------
-
-for column in table.columns:
-
-    if "Change From Previous Year" in column:
-
-        table[column] = table[column].map(
-            lambda x:
-            "—"
-            if pd.isna(x)
-            else f"{x:+.1f}%"
-        )
-
-
-# ------------------------------------------------------------
-# Highlight changes
-# ------------------------------------------------------------
-
-def highlight_change(value):
-
-    if value == "—":
-        return ""
-
-    try:
-
-        number = float(
-            value
-            .replace("%", "")
-            .replace("+", "")
-        )
-
-        if number < 0:
-            return (
-                "background-color: #d9f2d9;"
-                "color: #187a18;"
-                "font-weight: bold;"
-            )
-
-        if number > 0:
-            return (
-                "background-color: #f8d7da;"
-                "color: #b02a37;"
-                "font-weight: bold;"
-            )
-
-    except Exception:
-        pass
-
-    return ""
-
-
-# ------------------------------------------------------------
-# Transpose: rows = metrics (Count / Change per crime type),
-# columns = years. Easier to scan year-over-year this way.
-# ------------------------------------------------------------
-
-table = table.set_index("Year")
-transposed = table.T
-transposed.index.name = "Metric"
-transposed = transposed.reset_index()
-
-change_row_mask = transposed["Metric"].str.contains(
-    "Change From Previous Year"
-)
-
-
-def highlight_row(row):
-
-    if not change_row_mask.loc[row.name]:
-        return ["" for _ in row]
-
-    return [
-        "" if column == "Metric" else highlight_change(value)
-        for column, value in row.items()
-    ]
-
-
-styled_table = transposed.style.apply(
-    highlight_row,
-    axis=1
-)
+trend_table = pd.DataFrame(table_rows)
 
 st.dataframe(
-    styled_table,
+    trend_table,
     width="stretch",
     hide_index=True
 )
@@ -790,9 +682,8 @@ st.dataframe(
 st.caption(
     "Columns are years, rows show counts and year-over-year percentage "
     "changes per crime category. 2023 is shown without a percentage "
-    "change because the dataset starts on January 1, 2023. 2026 is "
-    "shown as year-to-date data and is therefore not used for "
-    "year-over-year percentage comparisons."
+    "change because the dataset starts on January 1, 2023. Note that 2026 "
+    "reflects year-to-date data compared against the full prior year."
 )
 
 # ============================================================
@@ -895,10 +786,13 @@ if not intensity_data.empty:
     )
 
     fig.update_layout(
-        coloraxis_colorbar=dict(tickformat=",")
+        coloraxis_colorbar=dict(tickformat=","),
+        plot_bgcolor="white"
     )
 
     fig.update_traces(
+        xgap=1,
+        ygap=1,
         hovertemplate="%{y}, %{x}:00<br>%{z:,} crimes<extra></extra>"
     )
 
